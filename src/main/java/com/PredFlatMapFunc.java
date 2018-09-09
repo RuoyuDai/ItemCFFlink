@@ -12,6 +12,7 @@ import java.util.stream.Collectors;
 public class PredFlatMapFunc implements FlatMapFunction<Tuple2<Integer, List<Tuple2<Integer, Integer>>>, Tuple3<Integer, Integer, Double>> {
     @Override
     public void flatMap(Tuple2<Integer, List<Tuple2<Integer, Integer>>> userLiked, Collector<Tuple3<Integer, Integer, Double>> collector) throws Exception {
+        long startTime = System.currentTimeMillis();
         final List<Tuple2<Integer, Integer>> userLikedItems = userLiked.f1;
         final int userId = userLiked.f0;
 
@@ -22,12 +23,14 @@ public class PredFlatMapFunc implements FlatMapFunction<Tuple2<Integer, List<Tup
         Map<Integer, Integer> likedItemMap = toMap(userLikedItems);
         List<Tuple2<Tuple2<Integer, Integer>, Tuple2<Integer, Double>>> simiItems = new ArrayList<>();
 
+        Jedis redis = JedisConnectionPool.getJedis();
         userLikedItems.stream().forEach(oneItemAndRating -> {
-            List<Tuple2<Integer, Double>> likelyItem = findLikely(oneItemAndRating.f0, likedItemMap, ItemCFStreaming.redis);
+            List<Tuple2<Integer, Double>> likelyItem = findLikely(oneItemAndRating.f0, likedItemMap, redis);
             likelyItem.stream().forEach(x -> {
                 simiItems.add(new Tuple2(oneItemAndRating, x));
             });
         });
+        redis.close();
 
         Map<Integer, Double> predMap = new HashMap<>();
         simiItems.forEach(x -> {
@@ -47,7 +50,13 @@ public class PredFlatMapFunc implements FlatMapFunction<Tuple2<Integer, List<Tup
         predList.sort(new Comparator<Tuple2<Integer, Double>>() {
             @Override
             public int compare(Tuple2<Integer, Double> o1, Tuple2<Integer, Double> o2) {
-                return o1.f1 < o2.f1 ? 1 : -1;
+                if (o1.f1 < o2.f1) {
+                    return 1;
+                }else if (o1.f1 > o2.f1){
+                    return -1;
+                }else{
+                    return 0;
+                }
             }
         });
 
@@ -56,6 +65,8 @@ public class PredFlatMapFunc implements FlatMapFunction<Tuple2<Integer, List<Tup
                 collector.collect(new Tuple3(userId, predList.get(i).f0, predList.get(i).f1));
             }
         }
+        long endTime = System.currentTimeMillis();
+        System.out.println("Used Time:" + (endTime - startTime));
     }
 
     private static Map<Integer,Integer> toMap(List<Tuple2<Integer,Integer>> userLikedItems) {
@@ -64,12 +75,12 @@ public class PredFlatMapFunc implements FlatMapFunction<Tuple2<Integer, List<Tup
         return likeMap;
     }
 
-    private static List<Tuple2<Integer, Double>> findLikely(Integer user, Map<Integer, Integer> userLikedItems, Jedis redis) {
+    private static List<Tuple2<Integer, Double>> findLikely(Integer item1, Map<Integer, Integer> userLikedItems, Jedis redis) {
         List<Tuple2<Integer, Double>> res = new LinkedList<>();
 
         Set<String> items = redis.smembers("items");
         items.stream().forEach(x -> {
-            Double simi = ItemCFStreaming.findSimilarity(user, Integer.parseInt(x));
+            Double simi = ItemCFStreaming.findSimilarity(item1, Integer.parseInt(x));
             if(simi > 0) {
                 res.add(new Tuple2(Integer.parseInt(x), simi));
             }
@@ -78,11 +89,12 @@ public class PredFlatMapFunc implements FlatMapFunction<Tuple2<Integer, List<Tup
         res.sort(new Comparator<Tuple2<Integer, Double>>() {
             @Override
             public int compare(Tuple2<Integer, Double> o1, Tuple2<Integer, Double> o2) {
-                if(o1.f1 < o2.f1){
+                if (o1.f1 < o2.f1) {
                     return 1;
-                }
-                else {
+                }else if (o1.f1 > o2.f1){
                     return -1;
+                }else{
+                    return 0;
                 }
             }
         });

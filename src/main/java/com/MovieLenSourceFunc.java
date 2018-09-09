@@ -7,7 +7,7 @@ import java.io.FileReader;
 import java.io.IOException;
 
 public class MovieLenSourceFunc implements SourceFunction<String> {
-    private volatile boolean isRunning = true;
+    private volatile boolean isRunning = false;
 
     @Override
     public void run(SourceContext<String> ctx) throws Exception {

@@ -89,27 +89,30 @@ class SimpleServer implements IoHandler {
         acceptor.getFilterChain().addLast("codec", new ProtocolCodecFilter(new TextLineCodecFactory(StandardCharsets.UTF_8)));
         acceptor.getSessionConfig().setIdleTime(IdleStatus.WRITER_IDLE, 3);
         acceptor.setHandler(this);
-        acceptor.bind(new InetSocketAddress(40080));
+        acceptor.bind(new InetSocketAddress(10080));
         System.out.println("Server started...");
     }
 
     /**
      * 会话建立时，读取测试集数据。
+     *
      * @param ioSession
      * @throws Exception
      */
     @Override
     public void sessionCreated(IoSession ioSession) throws Exception {
-        BufferedReader br = new BufferedReader(new FileReader("/Users/ruoyudai/Documents/workspace/ml-100k/ua.test"));
-        String line = null;
-        int collected = 0;
-        while ((line = br.readLine()) != null) {
-            this.testData.add("1\t" + line);
-        }
-        br.close();
-        System.out.println("Collected test data:[" + this.testData.size() + "]");
+        if (this.testData.size() == 0) {
+            BufferedReader br = new BufferedReader(new FileReader("/Users/ruoyudai/Documents/workspace/ml-100k/ua.test"));
+            String line = null;
+            int collected = 0;
+            while ((line = br.readLine()) != null) {
+                this.testData.add("1\t" + line);
+            }
+            br.close();
+            System.out.println("Collected test data:[" + this.testData.size() + "]");
 
-        this.indexMap.put(ioSession, 0);
+            this.indexMap.put(ioSession, 0);
+        }
     }
 
     @Override
@@ -146,7 +149,7 @@ class SimpleServer implements IoHandler {
         }
         this.indexMap.put(ioSession, count);
 
-        Jedis redis = new Jedis();
+        Jedis redis = JedisConnectionPool.getJedis();
         List<String> preds = redis.lrange("recommodation", 0, -1);
 
         Map<String, Integer> predMap = new HashMap<String, Integer>();
@@ -160,8 +163,8 @@ class SimpleServer implements IoHandler {
         int precision = 0;
         for (String col : this.testData.subList(0, count)) {
             String[] ratings = col.split("\t");
-            String user = ratings[0];
-            String item = ratings[1];
+            String user = ratings[1];
+            String item = ratings[2];
             if (predMap.containsKey(user + ":" + item)) {
                 precision++;
             }

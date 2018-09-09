@@ -22,14 +22,12 @@ import java.util.*;
 
 public class ItemCFStreaming {
 
-    public static Jedis redis = new Jedis();
-
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(2);
 
         // 通过socket监听来输入查询请求
-        DataStreamSource<String> userQueryStream = env.socketTextStream("localhost",40080);
+        DataStreamSource<String> userQueryStream = env.socketTextStream("localhost", 10080);
         // 通过读取文件来输入数据
         DataStreamSource<String> userRatingStream = env.addSource(new MovieLenSourceFunc());
         // 合并流
@@ -58,20 +56,22 @@ public class ItemCFStreaming {
 
         //更新受影响的所有相似度，并存储
         updateStream
-                .flatMap(new FlatMapFunction<Tuple3<Integer,Integer,Integer>, Tuple2<Tuple2<Integer, List<String>>, Tuple2<String, List<String>>>>() {
+                .flatMap(new FlatMapFunction<Tuple3<Integer, Integer, Integer>, Tuple2<Tuple2<Integer, List<String>>, Tuple2<String, List<String>>>>() {
                     @Override
-                    public void flatMap(Tuple3<Integer, Integer, Integer> rating, Collector<Tuple2<Tuple2<Integer, List<String>>, Tuple2<String, List<String>>>> collector) throws Exception { Jedis redis = new Jedis();
+                    public void flatMap(Tuple3<Integer, Integer, Integer> rating, Collector<Tuple2<Tuple2<Integer, List<String>>, Tuple2<String, List<String>>>> collector) throws Exception {
+                        Jedis redis = JedisConnectionPool.getJedis();
                         List<String> myratings = redis.lrange("item_" + rating.f1, 0, -1);
                         Set<String> items = redis.smembers("items");
-                        for(String item : items){
+                        for (String item : items) {
                             List<String> itemVector = redis.lrange("item_" + item, 0, -1);
-                            if(itemVector != null && itemVector.size() > 0) {
+                            if (itemVector != null && itemVector.size() > 0) {
                                 collector.collect(new Tuple2(new Tuple2(rating.f1, myratings), new Tuple2(item, itemVector)));
                             }
                         }
+                        redis.close();
                     }
                 })
-                .map(new MapFunction<Tuple2<Tuple2<Integer,List<String>>,Tuple2<String,List<String>>>, Tuple2<Integer, Tuple2<String, Double>>>() {
+                .map(new MapFunction<Tuple2<Tuple2<Integer, List<String>>, Tuple2<String, List<String>>>, Tuple2<Integer, Tuple2<String, Double>>>() {
                     @Override
                     public Tuple2<Integer, Tuple2<String, Double>> map(Tuple2<Tuple2<Integer, List<String>>, Tuple2<String, List<String>>> value) throws Exception {
                         Double similarity = calcuSim(value.f0.f1, value.f1.f1);
@@ -82,10 +82,9 @@ public class ItemCFStreaming {
     }
 
 
-
     private static SinkFunction<Tuple3<Integer, Integer, Double>> buildPredRedisConnector() {
         FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
-        return new RedisSink<Tuple3<Integer, Integer, Double>>(conf, new RedisMapper<Tuple3<Integer, Integer, Double>>(){
+        return new RedisSink<Tuple3<Integer, Integer, Double>>(conf, new RedisMapper<Tuple3<Integer, Integer, Double>>() {
 
             @Override
             public RedisCommandDescription getCommandDescription() {
@@ -114,27 +113,31 @@ public class ItemCFStreaming {
 
     public static Double findSimilarity(Integer item1, Integer item2) {
         String res = null;
+        Jedis redis = JedisConnectionPool.getJedis();
         if (item1 < item2) {
-            res = redis.get("similary_" + item1 + ":" + item2 );
-        }else{
-            res = redis.get("similary_" + item2 + ":" + item1 );
+            res = redis.get("similary_" + item1 + ":" + item2);
+        } else {
+            res = redis.get("similary_" + item2 + ":" + item1);
         }
+        redis.close();
         return (res == null) ? 0.0d : Double.parseDouble(res);
     }
 
-    private static Tuple2<Integer, List<Tuple2<Integer, Integer>>> getAllLiked(Tuple3<Integer,Integer,Integer> source) {
+    private static Tuple2<Integer, List<Tuple2<Integer, Integer>>> getAllLiked(Tuple3<Integer, Integer, Integer> source) {
+        Jedis redis = JedisConnectionPool.getJedis();
         List<String> items = redis.lrange("user_" + source.f0, 0, -1);
         List<Tuple2<Integer, Integer>> resList = new ArrayList<>();
-                items.stream().forEach(x -> {
+        items.stream().forEach(x -> {
             String[] itemRating = x.split(":");
-                    resList.add(new Tuple2(Integer.parseInt(itemRating[0]), Integer.parseInt(itemRating[1])));
+            resList.add(new Tuple2(Integer.parseInt(itemRating[0]), Integer.parseInt(itemRating[1])));
         });
+        redis.close();
         return new Tuple2(source.f0, resList);
     }
 
     private static SinkFunction<Tuple2<Integer, Tuple2<String, Double>>> buildSimilarityRedisConnector() {
         FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
-        return new RedisSink<Tuple2<Integer, Tuple2<String, Double>>>(conf, new RedisMapper<Tuple2<Integer, Tuple2<String, Double>>>(){
+        return new RedisSink<Tuple2<Integer, Tuple2<String, Double>>>(conf, new RedisMapper<Tuple2<Integer, Tuple2<String, Double>>>() {
             @Override
             public RedisCommandDescription getCommandDescription() {
                 return new RedisCommandDescription(RedisCommand.SET, "");
@@ -142,9 +145,9 @@ public class ItemCFStreaming {
 
             @Override
             public String getKeyFromData(Tuple2<Integer, Tuple2<String, Double>> t) {
-                if(t.f0 < Integer.parseInt(t.f1.f0)) {
+                if (t.f0 < Integer.parseInt(t.f1.f0)) {
                     return "similary_" + t.f0 + ":" + t.f1.f0;
-                }else{
+                } else {
                     return "similary_" + t.f1.f0 + ":" + t.f0;
                 }
             }
@@ -156,7 +159,7 @@ public class ItemCFStreaming {
         });
     }
 
-    public static Double calcuSim(List<String> v1, List<String> v2){
+    public static Double calcuSim(List<String> v1, List<String> v2) {
         Map<Integer, Integer> map = new HashMap<>();
 
         int dinominator1 = 0;
@@ -165,7 +168,7 @@ public class ItemCFStreaming {
             int user = Integer.parseInt(userRating[0]);
             int rating = Integer.parseInt(userRating[1]);
             map.put(user, rating);
-            dinominator1+= rating * rating;
+            dinominator1 += rating * rating;
         }
 
         int dinominator2 = 0;
@@ -174,8 +177,8 @@ public class ItemCFStreaming {
             String[] userRating = s.split(":");
             int user = Integer.parseInt(userRating[0]);
             int rating = Integer.parseInt(userRating[1]);
-            dinominator2+= rating * rating;
-            if (map.containsKey(user)){
+            dinominator2 += rating * rating;
+            if (map.containsKey(user)) {
                 numerator += rating * map.get(user);
             }
         }
@@ -192,9 +195,9 @@ public class ItemCFStreaming {
         return res;
     }
 
-    private static SinkFunction<Tuple3<Integer,Integer,Integer>> buildUserRedisConnector() {
+    private static SinkFunction<Tuple3<Integer, Integer, Integer>> buildUserRedisConnector() {
         FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
-        return new RedisSink<Tuple3<Integer, Integer, Integer>>(conf, new RedisMapper<Tuple3<Integer, Integer, Integer>>(){
+        return new RedisSink<Tuple3<Integer, Integer, Integer>>(conf, new RedisMapper<Tuple3<Integer, Integer, Integer>>() {
 
             @Override
             public RedisCommandDescription getCommandDescription() {
@@ -215,7 +218,7 @@ public class ItemCFStreaming {
 
     private static SinkFunction<Tuple3<Integer, Integer, Integer>> buildItemRedisConnector() {
         FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
-        return new RedisSink<Tuple3<Integer, Integer, Integer>>(conf, new RedisMapper<Tuple3<Integer, Integer, Integer>>(){
+        return new RedisSink<Tuple3<Integer, Integer, Integer>>(conf, new RedisMapper<Tuple3<Integer, Integer, Integer>>() {
 
             @Override
             public RedisCommandDescription getCommandDescription() {
@@ -234,9 +237,9 @@ public class ItemCFStreaming {
         });
     }
 
-    private static SinkFunction<Tuple3<Integer,Integer,Integer>> buildAllItemRedisConnector() {
+    private static SinkFunction<Tuple3<Integer, Integer, Integer>> buildAllItemRedisConnector() {
         FlinkJedisPoolConfig conf = new FlinkJedisPoolConfig.Builder().setHost("127.0.0.1").build();
-        return new RedisSink<Tuple3<Integer, Integer, Integer>>(conf, new RedisMapper<Tuple3<Integer, Integer, Integer>>(){
+        return new RedisSink<Tuple3<Integer, Integer, Integer>>(conf, new RedisMapper<Tuple3<Integer, Integer, Integer>>() {
 
             @Override
             public RedisCommandDescription getCommandDescription() {
@@ -255,8 +258,8 @@ public class ItemCFStreaming {
         });
     }
 
-    public static Tuple3<Integer, Integer, Integer> convertRating(String line){
+    public static Tuple3<Integer, Integer, Integer> convertRating(String line) {
         String[] lineText = line.split("\t");
-        return new Tuple3<>(Integer.parseInt(lineText[1]), Integer.parseInt(lineText[2]),Integer.parseInt(lineText[3]));
+        return new Tuple3<>(Integer.parseInt(lineText[1]), Integer.parseInt(lineText[2]), Integer.parseInt(lineText[3]));
     }
 }
